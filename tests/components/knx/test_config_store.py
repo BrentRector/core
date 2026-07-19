@@ -419,7 +419,7 @@ async def test_validate_entity(
     assert res["result"]["success"] is False
     assert res["result"]["errors"][0]["path"] == ["data", "knx", "ga_switch", "write"]
     assert res["result"]["errors"][0]["message"] == "required key not provided"
-    assert res["result"]["errors"][0]["code"] == "RequiredFieldInvalid"
+    assert res["result"]["errors"][0]["code"] == "required"
     assert res["result"]["error_base"].startswith("required key not provided")
 
     # invalid group_select data
@@ -451,7 +451,7 @@ async def test_validate_entity(
         "ga_blue_brightness",
     ]
     assert res["result"]["errors"][0]["message"] == "required key not provided"
-    assert res["result"]["errors"][0]["code"] == "RequiredFieldInvalid"
+    assert res["result"]["errors"][0]["code"] == "required"
     assert res["result"]["error_base"].startswith("required key not provided")
 
 
@@ -481,7 +481,7 @@ async def test_update_expose_error(
     assert res["result"]["success"] is False
     assert res["result"]["errors"][0]["path"] == ["data", "options", "0", "ga", "write"]
     assert res["result"]["errors"][0]["message"] == "required key not provided"
-    assert res["result"]["errors"][0]["code"] == "RequiredFieldInvalid"
+    assert res["result"]["errors"][0]["code"] == "required"
 
 
 async def test_validate_expose(
