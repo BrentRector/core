@@ -1,19 +1,19 @@
 """The Remember The Milk integration."""
 
 from copy import deepcopy
-from dataclasses import dataclass
 from typing import Any
 
-from aiortm import AioRTMClient, Auth, AuthError
+from aiortm import AioRTMClient, AioRTMError, Auth, AuthError
 import voluptuous as vol
 
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
+from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import (
     CONF_API_KEY,
     CONF_ID,
     CONF_NAME,
     CONF_TOKEN,
     CONF_USERNAME,
+    Platform,
 )
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -24,9 +24,16 @@ from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_SHARED_SECRET, DOMAIN, LOGGER
+from .const import CONF_LIST_ID, CONF_SHARED_SECRET, DOMAIN, LOGGER, SUBENTRY_TYPE_LIST
+from .coordinator import (
+    RememberTheMilkConfigEntry,
+    RememberTheMilkData,
+    RtmTodoCoordinator,
+)
 from .entity import RememberTheMilkEntity
 from .storage import RememberTheMilkConfiguration
+
+PLATFORMS = [Platform.TODO]
 
 RTM_SCHEMA = vol.Schema(
     {
@@ -51,15 +58,6 @@ SERVICE_SCHEMA_COMPLETE_TASK = vol.Schema({vol.Required(CONF_ID): cv.string})
 
 DATA_COMPONENT = "component"
 DATA_STORAGE = "storage"
-
-type RememberTheMilkConfigEntry = ConfigEntry[RememberTheMilkData]
-
-
-@dataclass
-class RememberTheMilkData:
-    """Runtime data for a Remember The Milk config entry."""
-
-    entity_id: str
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -172,7 +170,20 @@ async def async_setup_entry(
         token_valid=token_valid,
     )
     await component.async_add_entities([entity])
-    entry.runtime_data = RememberTheMilkData(entity_id=entity.entity_id)
+
+    coordinator = RtmTodoCoordinator(hass, entry, client)
+    known_list_ids = {
+        subentry.data[CONF_LIST_ID]
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_LIST
+    }
+
+    entry.runtime_data = RememberTheMilkData(
+        entity_id=entity.entity_id,
+        client=client,
+        coordinator=coordinator,
+        known_list_ids=known_list_ids,
+    )
 
     # The services are registered here for now because they need the account name.
     # The services will be deprecated when a todo platform is added.
@@ -193,7 +204,35 @@ async def async_setup_entry(
     if not token_valid:
         raise ConfigEntryAuthFailed("Invalid token")
 
+    await coordinator.async_config_entry_first_refresh()
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     return True
+
+
+async def _async_update_listener(
+    hass: HomeAssistant, entry: RememberTheMilkConfigEntry
+) -> None:
+    """Delete removed lists on the server and reload when subentries change."""
+    data = entry.runtime_data
+    current_list_ids = {
+        subentry.data[CONF_LIST_ID]
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_LIST
+    }
+    removed_list_ids = data.known_list_ids - current_list_ids
+    if removed_list_ids:
+        try:
+            timeline_response = await data.client.rtm.timelines.create()
+            for list_id in removed_list_ids:
+                await data.client.rtm.lists.delete(
+                    timeline=timeline_response.timeline,
+                    list_id=list_id,
+                )
+        except (AuthError, AioRTMError) as err:
+            LOGGER.warning("Failed to delete list on Remember The Milk: %s", err)
+    hass.config_entries.async_schedule_reload(entry.entry_id)
 
 
 async def async_unload_entry(
@@ -204,4 +243,4 @@ async def async_unload_entry(
         DATA_COMPONENT
     ]
     await component.async_remove_entity(entry.runtime_data.entity_id)
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
